@@ -47,6 +47,4 @@ describe("fill_in_function", function()
             eq(expected_state, r(buffer))
         end)
     end
-    it("stdout into function virtual text", function()
-    end)
 end)

@@ -50,6 +50,14 @@ function _99.fill_in_function()
     ops.fill_in_function(_99_state)
 end
 
+--- As a warning do not use this function unless you intend to use it for
+--- debugging purposes.  Any other use will likely result in this library
+--- not working properly
+--- @return _99.State
+function _99.__get_state()
+    return _99_state
+end
+
 --- @param opts _99.Options?
 function _99.setup(opts)
     opts = opts or {}

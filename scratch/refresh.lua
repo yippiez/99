@@ -55,7 +55,8 @@ function create_mark()
     local fn = ts.containing_function(buffer, Point:from_cursor())
     assert(fn, "could not find containing function")
 
-    local m = Mark.mark_func_body(buffer, fn):set_max_virt_lines(3)
+    local _99 = require("99")
+    local m = Mark.mark_func_body(_99.__get_state(), buffer, fn)
 
     write(m, {
         "hello, world",

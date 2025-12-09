@@ -159,6 +159,19 @@ function Point:eq(point)
     return project(self) == project(point)
 end
 
+--- @param mark _99.Mark
+--- @return _99.Point
+function Point.from_mark(mark)
+    --- buf extmark by id is a 0 based api
+    local pos =
+        vim.api.nvim_buf_get_extmark_by_id(mark.buffer, mark.nsid, mark.id, {})
+
+    return setmetatable({
+        row = pos[1] + 1,
+        col = pos[2] + 1,
+    }, Point)
+end
+
 --- @class _99.Range
 --- @field start _99.Point
 --- @field end_ _99.Point

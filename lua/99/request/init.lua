@@ -124,9 +124,9 @@ Request.__index = Request
 
 --- @param opts _99.Request.Opts
 function Request.new(opts)
-    validate_opts(opts)
-
     opts.provider = opts.provider or OpenCodeProvider
+
+    validate_opts(opts)
 
     local config = opts --[[ @as _99.Request.Config ]]
 

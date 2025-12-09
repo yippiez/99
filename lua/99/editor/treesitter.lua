@@ -102,12 +102,14 @@ Function.__index = Function
 function Function.from_ts_node(ts_node, lang, buffer, cursor)
     local ok, query = pcall(vim.treesitter.query.get, lang, function_query)
     if not ok or query == nil then
-        Logger:fatal("INVARIANT: not query or not ok")
+        Logger:fatal("not query or not ok")
         error("failed")
     end
 
-    local func = { }
-    for id, node, _ in query:iter_captures(ts_node, buffer, 0, -1, { all = true }) do
+    local func = {}
+    for id, node, _ in
+        query:iter_captures(ts_node, buffer, 0, -1, { all = true })
+    do
         local range = Range:from_ts_node(node, buffer)
         local name = query.captures[id]
         if range:contains(cursor) then
@@ -122,14 +124,14 @@ function Function.from_ts_node(ts_node, lang, buffer, cursor)
     end
 
     -- Not all functions have bodies, example: function foo() end
-    assert(func.function_node ~= nil, "INVARIANT: function_node not found")
-    assert(func.function_range ~= nil, "INVARIANT: function_range not found")
+    assert(func.function_node ~= nil, "function_node not found")
+    assert(func.function_range ~= nil, "function_range not found")
 
     return setmetatable(func, Function)
 end
 
 --- @class _99.Scope
---- @field scope _99.treesitter.Node[]
+--- @field scope _99.treesitter.TSNode[]
 --- @field range _99.Range[]
 --- @field buffer number
 --- @field cursor _99.Point
@@ -153,7 +155,7 @@ function Scope:has_scope()
     return #self.range > 0
 end
 
---- @return _99.treesitter.Node | nil
+--- @return _99.treesitter.TSNode | nil
 function Scope:get_inner_scope()
     return self.scope[#self.scope]
 end
@@ -163,7 +165,7 @@ function Scope:get_inner_range()
     return self.range[#self.range]
 end
 
---- @param node _99.treesitter.Node
+--- @param node _99.treesitter.TSNode
 function Scope:push(node)
     local range = Range:from_ts_node(node, self.buffer)
     if not range:contains(self.cursor) then
@@ -212,9 +214,21 @@ function M.containing_function(buffer, cursor)
     for id, node, _ in query:iter_captures(root, buffer, 0, -1, { all = true }) do
         local range = Range:from_ts_node(node, buffer)
         local name = query.captures[id]
-        Logger:debug("containing_function#capture", "range", range:to_string(), "name", name)
+        Logger:debug(
+            "containing_function#capture",
+            "range",
+            range:to_string(),
+            "name",
+            name
+        )
         if name == "context.function" and range:contains(cursor) then
-            Logger:debug("    containing_function#capture#found", "cursor", cursor:to_string(), "range", range:to_string())
+            Logger:debug(
+                "    containing_function#capture#found",
+                "cursor",
+                cursor:to_string(),
+                "range",
+                range:to_string()
+            )
             if not found_range then
                 found_range = range
                 found_node = node
@@ -223,7 +237,11 @@ function M.containing_function(buffer, cursor)
                 found_node = node
             end
         end
-        Logger:debug("containing_function#capture finished loop", "found_range", found_range and found_range:to_string() or "found_range is nil")
+        Logger:debug(
+            "containing_function#capture finished loop",
+            "found_range",
+            found_range and found_range:to_string() or "found_range is nil"
+        )
     end
 
     if not found_range then

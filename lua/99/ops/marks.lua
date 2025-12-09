@@ -9,8 +9,7 @@ local nsid = vim.api.nvim_create_namespace("99.marks")
 --- @class _99.Mark
 --- @field id any -- whatever extmark returns
 --- @field buffer number
---- @field max_lines number
---- @field lines string[]
+--- @field nsid any
 local Mark = {}
 Mark.__index = Mark
 
@@ -21,20 +20,11 @@ function Mark.mark_func_body(buffer, func)
     local line, col = start:to_vim()
     local id = vim.api.nvim_buf_set_extmark(buffer, nsid, line, col, {})
 
-    Logger:debug("mark_func_body", "function_range", func.function_range:to_string(), "function_range#start", func.function_range.start:to_string())
     return setmetatable({
         id = id,
         buffer = buffer,
-        max_lines = 1,
-        lines = {},
+        nsid = nsid,
     }, Mark)
-end
-
---- @param count number
---- @return _99.Mark
-function Mark:set_max_virt_lines(count)
-    self.max_lines = count
-    return self
 end
 
 --- @param lines string[]
@@ -43,22 +33,13 @@ function Mark:set_virtual_text(lines)
         vim.api.nvim_buf_get_extmark_by_id(self.buffer, nsid, self.id, {})
     assert(#pos > 0, "extmark is broken.  it does not exist")
     local row, col = pos[1], pos[2]
-    Logger:warn("set_virt", "pos", pos)
-
-    for _, line in ipairs(lines) do
-        table.insert(self.lines, line)
-        if #self.lines > self.max_lines then
-            table.remove(self.lines, 1)
-        end
-    end
 
     local formatted_lines = {}
-    for _, line in ipairs(self.lines) do
+    for _, line in ipairs(lines) do
         table.insert(formatted_lines, {
             { line, "Comment" },
         })
     end
-
 
     vim.api.nvim_buf_set_extmark(self.buffer, nsid, row, col, {
         id = self.id,
