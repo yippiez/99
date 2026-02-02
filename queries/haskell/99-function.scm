@@ -1,19 +1,19 @@
-; Top-level function declarations
-(function) @context.function
-
-; Function equations with body
+; Match functions with patterns (arguments) - this excludes signatures
 (function
-  (equations
-    (equation
-      rhs: (_) @context.body)))
+  (patterns)) @context.function
+
+; Match function bodies (the match node containing = and body)
+(function
+  (patterns)
+  (match) @context.body)
+
+; Bindings (like "lambda = \\x -> x + 1") with body
+(bind
+  (match) @context.body) @context.function
 
 ; Lambda expressions
-(exp_lambda
-  body: (_) @context.body) @context.function
+(lambda) @context.function
 
-; Pattern bindings (for simple definitions)
-(pattern_binding) @context.function
-
-; Pattern binding with body
-(pattern_binding
-  rhs: (_) @context.body)
+; Lambda body (everything after ->)
+(lambda
+  (_) @context.body)

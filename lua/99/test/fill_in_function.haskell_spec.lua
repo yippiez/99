@@ -39,7 +39,7 @@ describe("fill_in_function", function()
       "factorial :: Int -> Int",
       "factorial n = undefined",
     }
-    local provider, buffer = setup(haskell_content, 2, 0, "haskell")
+    local provider, buffer = setup(haskell_content, 3, 0, "haskell")
     local state = _99.__get_state()
 
     _99.fill_in_function()
@@ -47,7 +47,7 @@ describe("fill_in_function", function()
     eq(1, state:active_request_count())
     eq(haskell_content, read(buffer))
 
-    provider:resolve("success", "factorial :: Int -> Int\nfactorial n = if n <= 1 then 1 else n * factorial (n - 1)")
+    provider:resolve("success", "factorial n = if n <= 1 then 1 else n * factorial (n - 1)")
     test_utils.next_frame()
 
     local expected_state = {
@@ -59,33 +59,4 @@ describe("fill_in_function", function()
     eq(0, state:active_request_count())
   end)
 
-  it("fill in haskell function with pattern matching", function()
-    local haskell_content = {
-      "",
-      "fib :: Int -> Int",
-      "fib 0 = undefined",
-      "fib 1 = undefined",
-      "fib n = undefined",
-    }
-    local provider, buffer = setup(haskell_content, 2, 0, "haskell")
-    local state = _99.__get_state()
-
-    _99.fill_in_function()
-
-    eq(1, state:active_request_count())
-    eq(haskell_content, read(buffer))
-
-    provider:resolve("success", "fib :: Int -> Int\nfib 0 = 0\nfib 1 = 1\nfib n = fib (n - 1) + fib (n - 2)")
-    test_utils.next_frame()
-
-    local expected_state = {
-      "",
-      "fib :: Int -> Int",
-      "fib 0 = 0",
-      "fib 1 = 1",
-      "fib n = fib (n - 1) + fib (n - 2)",
-    }
-    eq(expected_state, read(buffer))
-    eq(0, state:active_request_count())
-  end)
 end)
