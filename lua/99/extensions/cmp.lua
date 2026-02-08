@@ -66,7 +66,7 @@ function CmpSource:complete(_, callback)
   for _, item in ipairs(self.items) do
     table.insert(items, {
       label = item.rule.name,
-      insertText = item.rule.name,
+      insertText = "@" .. item.rule.name,
       filterText = "@" .. item.rule.name,
       kind = 17, -- file
       documentation = {

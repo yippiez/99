@@ -1,40 +1,33 @@
+local Geo = require("99.geo")
+local ts = require("99.editor.treesitter")
+--- @class Lsp
+--- @field config _99.Options Configuration options for the LSP client
+local Lsp = {}
+Lsp.__index = Lsp
+
 --------------------------------------------------------------------------------
 -- TYPE DEFINITIONS
 --------------------------------------------------------------------------------
-
---- @class LspPosition
---- @field character number Zero-based character offset within a line
---- @field line number Zero-based line number
-
---- @class LspRange
---- @field start LspPosition The start position of the range (inclusive)
---- @field end LspPosition The end position of the range (exclusive)
-
 --- @class LspDefinitionResult
---- @field range LspRange The range in the target document where the definition is located
+--- @field range _99.Range The range in the target document where the definition is located
 --- @field uri string The URI of the document containing the definition
 
 --------------------------------------------------------------------------------
 -- HELPER FUNCTIONS
 --------------------------------------------------------------------------------
 
---- Converts a Treesitter node's position to an LSP-compatible position.
----
---- @param node _99.treesitter.Node The treesitter node to convert
---- @return LspPosition The LSP-compatible position (0-based line and character)
-local function ts_node_to_lsp_position(node)
-  local start_row, start_col, _, _ = node:range()
-  return { line = start_row, character = start_col }
-end
-
---- Makes an LSP textDocument/definition request for a given position.
----
 --- @param buffer number The buffer number to make the request for
---- @param position LspPosition The position in the document to get definitions for
+--- @param position _99.Point The position in the document to get definitions for
 --- @param cb fun(res: LspDefinitionResult[] | nil): nil Callback receiving the definition results
 local function get_lsp_definitions(buffer, position, cb)
-  local params = vim.lsp.util.make_position_params()
-  params.position = position
+  local line, char = position:to_lsp()
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(buffer),
+    position = {
+      line = line,
+      character = char,
+    },
+  }
 
   vim.lsp.buf_request(
     buffer,
@@ -45,30 +38,6 @@ local function get_lsp_definitions(buffer, position, cb)
     end
   )
 end
-
---- Resolves a Lua require path to an absolute file path using Neovim's runtime.
----
---- @param require_path string The Lua require path (e.g., "99.logger.logger")
---- @return string|nil The absolute file path, or nil if it can't be resolved
-local function resolve_require_path(require_path)
-  local relative_path = "lua/" .. require_path:gsub("%.", "/") .. ".lua"
-  local results = vim.api.nvim_get_runtime_file(relative_path, false)
-
-  if results and #results > 0 then
-    return results[1]
-  end
-
-  -- Also try init.lua for module directories
-  local init_path = "lua/" .. require_path:gsub("%.", "/") .. "/init.lua"
-  results = vim.api.nvim_get_runtime_file(init_path, false)
-
-  if results and #results > 0 then
-    return results[1]
-  end
-
-  return nil
-end
-
 --- Ensures a buffer is loaded and has LSP attached, then calls the callback.
 ---
 --- @param filepath string The file path to load
@@ -185,13 +154,7 @@ local function get_exports_hover_info(bufnr, export_keys, cb)
   local pending = #export_keys
 
   for _, export in ipairs(export_keys) do
-    local line_text =
-      vim.api.nvim_buf_get_lines(bufnr, export.line, export.line + 1, false)[1]
-
-    local pattern = export.name .. "%s*=%s*()"
-    local value_start = line_text:match(pattern)
-    local hover_col = value_start and (value_start - 1) or export.col
-    local position = { line = export.line, character = hover_col }
+    local position = { line = export.line, character = export.col }
 
     get_lsp_hover(bufnr, position, function(result, _)
       if result and result.contents then
@@ -225,6 +188,121 @@ local function get_exports_hover_info(bufnr, export_keys, cb)
       end
     end)
   end
+end
+
+--- Makes an LSP textDocument/documentSymbol request for a buffer.
+---
+--- @param bufnr number The buffer number
+--- @param cb fun(result: table|nil, err: string|nil): nil Callback with symbol results
+local function get_lsp_document_symbols(bufnr, cb)
+  local params = { textDocument = { uri = vim.uri_from_bufnr(bufnr) } }
+
+  vim.lsp.buf_request(
+    bufnr,
+    "textDocument/documentSymbol",
+    params,
+    function(err, result, _, _)
+      if err then
+        cb(nil, vim.inspect(err))
+        return
+      end
+      cb(result, nil)
+    end
+  )
+end
+
+--- @class _99.lsp.ExportPosition
+--- @field name string
+--- @field line number
+--- @field col number
+
+--- @class _99.lsp.ExportMember
+--- @field name string
+--- @field line number
+--- @field col number
+--- @field kind number|nil
+
+--- @class _99.lsp.ExportMetadata
+--- @field kind number|nil
+--- @field members _99.lsp.ExportMember[]|nil
+
+--- @alias _99.lsp.ExportMeta table<string, _99.lsp.ExportMetadata>
+
+--- Extracts export keys and metadata from LSP document symbols.
+---
+--- @param symbols table|nil LSP document symbols
+--- @return _99.lsp.ExportPosition[] export_keys
+--- @return _99.lsp.ExportMeta export_meta
+local function document_symbols_to_exports(symbols)
+  local export_keys = {}
+  local export_meta = {}
+
+  if not symbols then
+    return export_keys, export_meta
+  end
+
+  local function add_export(symbol)
+    if not symbol or not symbol.name then
+      return
+    end
+
+    local range = symbol.selectionRange or symbol.range
+    if not range or not range.start then
+      return
+    end
+
+    local name = symbol.name
+    table.insert(export_keys, {
+      name = name,
+      line = range.start.line,
+      col = range.start.character,
+    })
+
+    export_meta[name] = export_meta[name] or {}
+    export_meta[name].kind = symbol.kind
+
+    if symbol.children and #symbol.children > 0 then
+      local members = {}
+      for _, child in ipairs(symbol.children) do
+        local child_range = child.selectionRange or child.range
+        if child_range and child_range.start then
+          table.insert(members, {
+            name = child.name,
+            line = child_range.start.line,
+            col = child_range.start.character,
+            kind = child.kind,
+          })
+        end
+      end
+      if #members > 0 then
+        export_meta[name].members = members
+      end
+    end
+  end
+
+  local first = symbols[1]
+  if first and first.location then
+    -- SymbolInformation[]
+    for _, symbol in ipairs(symbols) do
+      if symbol.location and symbol.location.range then
+        table.insert(export_keys, {
+          name = symbol.name,
+          line = symbol.location.range.start.line,
+          col = symbol.location.range.start.character,
+        })
+        export_meta[symbol.name] = export_meta[symbol.name] or {}
+        export_meta[symbol.name].kind = symbol.kind
+      end
+    end
+    return export_keys, export_meta
+  end
+
+  -- DocumentSymbol[]
+  for _, symbol in ipairs(symbols) do
+    add_export(symbol)
+  end
+
+  return export_keys, export_meta
 end
 
 --- Finds all method/field definitions for a class in the source file.
@@ -325,12 +403,29 @@ local function format_hover_output(hover_text)
   end
 
   local lines = {}
+  local in_index_block = false
+  local in_table_block = false
 
   for line in hover_text:gmatch("[^\n]+") do
-    if not line:match("^```") then
+    if in_index_block then
+      if line:match("^%s*}") then
+        in_index_block = false
+      end
+    elseif in_table_block then
+      if line:match("^%s*}") then
+        in_table_block = false
+      end
+    elseif line:match("__index%s*{") then
+      in_index_block = true
+    elseif not line:match("^```") then
       local cleaned = line
       cleaned = cleaned:gsub("^local%s+", "")
       cleaned = cleaned:gsub("^[%w_]+:%s*", "")
+      local table_start = cleaned:match("^(.-)%s*{")
+      if table_start then
+        cleaned = table_start
+        in_table_block = true
+      end
       if cleaned ~= "" then
         table.insert(lines, cleaned)
       end
@@ -347,6 +442,8 @@ end
 local function format_function_signature(hover_text)
   local clean = hover_text:gsub("```%w*\n?", ""):gsub("```", "")
   clean = clean:gsub("^%s*", ""):gsub("%s*$", "")
+  clean = clean:gsub("\n.*", "")
+  clean = clean:gsub("%s*{.*$", "")
 
   local params, ret =
     clean:match("function%s*[%w_%.%:]*%((.-)%)%s*:%s*([^\n]+)")
@@ -398,14 +495,58 @@ local function expand_enum_values(file_lines, symbol_name)
   return values
 end
 
+--- @param source_bufnr number The buffer number of the source
+--- @param position _99.Point The position to resolve
+--- @param cb fun(location: { uri: string, res: string, error: string | nil}|nil, err: string|nil): nil
+local function resolve_definition_location(source_bufnr, position, cb)
+  get_lsp_definitions(source_bufnr, position, function(result)
+    if not result or #result == 0 then
+      cb(nil, "No definition found at position")
+      return
+    end
+
+    local item = result[1]
+    local uri = item.uri or item.targetUri
+    Lsp.get_exports(uri, function(res, err)
+      cb({
+        uri = uri,
+        results = res,
+        error = err,
+      })
+    end)
+  end)
+end
+
+--- Ensures a target buffer is loaded from a URI.
+---
+--- @param uri string The target document URI
+--- @param cb fun(bufnr: number|nil, filepath: string|nil, err: string|nil): nil
+local function with_target_buffer_from_uri(uri, cb)
+  local filepath = vim.uri_to_fname(uri)
+  ensure_buffer_with_lsp(filepath, function(bufnr, err)
+    if err then
+      cb(nil, nil, err)
+      return
+    end
+    cb(bufnr, filepath, nil)
+  end)
+end
+
+local function is_lsp_class_kind(kind)
+  return kind == 5 or kind == 11 or kind == 23
+end
+
+local function is_lsp_enum_kind(kind)
+  return kind == 10
+end
+
+local function is_lsp_function_kind(kind)
+  return kind == 6 or kind == 9 or kind == 12
+end
+
 --------------------------------------------------------------------------------
 -- LSP CLASS
 --------------------------------------------------------------------------------
-
---- @class Lsp
---- @field config _99.Options Configuration options for the LSP client
-local Lsp = {}
-Lsp.__index = Lsp
 
 --- Creates a new Lsp instance with the given configuration.
 ---
@@ -417,106 +558,404 @@ function Lsp.new(config)
   }, Lsp)
 end
 
---------------------------------------------------------------------------------
--- MODULE EXPORT STRINGIFICATION
---------------------------------------------------------------------------------
-
---- Converts module exports to a formatted string representation.
---- This is the main entry point for getting a stringified view of a module's exports.
+--- Stringifies exports for the symbol under a source position using LSP definitions.
 ---
---- @param require_path string The Lua require path (e.g., "99", "99.logger.logger")
+--- @param source_bufnr number The buffer number containing the reference
+--- @param position _99.Point The position of the import path or symbol
 --- @param cb fun(result: string, err: string|nil): nil Callback with formatted string or error
-function Lsp.stringify_module_exports(require_path, cb)
-  local resolved_path = resolve_require_path(require_path)
-
-  if not resolved_path then
-    cb(
-      "",
-      "Could not resolve module path: "
-        .. require_path
-        .. ". The module may not be in runtimepath."
-    )
-    return
-  end
-
-  local uri = vim.uri_from_fname(resolved_path)
-
-  ensure_buffer_with_lsp(resolved_path, function(bufnr, err)
+function Lsp.stringify_definition_exports(source_bufnr, position, cb)
+  resolve_definition_location(source_bufnr, position, function(res)
+    cb(res, "")
+  end)
+  --[[
+  resolve_definition_location(source_bufnr, position, function(location, err)
     if err then
       cb("", err)
       return
     end
 
-    local export_keys = find_export_keys(bufnr)
-
-    if #export_keys == 0 then
-      cb("", "No exports found in return statement")
-      return
-    end
-
-    get_exports_hover_info(bufnr, export_keys, function(hover_results)
-      local file_lines = vim.fn.readfile(resolved_path)
-
-      -- Collect classes that need member expansion
-      local classes_to_expand = {}
-      for _, export in ipairs(export_keys) do
-        local hover = hover_results[export.name] or "unknown"
-        local is_class = hover:match("__index") ~= nil
-          or hover:match(":%s*[%w_]+%s*{") ~= nil
-
-        if is_class then
-          local member_positions =
-            find_class_member_positions(file_lines, export.name)
-          if #member_positions > 0 then
-            table.insert(classes_to_expand, {
-              name = export.name,
-              positions = member_positions,
-            })
-          end
-        end
-      end
-
-      -- If no classes, format immediately
-      if #classes_to_expand == 0 then
-        local result = Lsp._format_exports(
-          require_path,
-          uri,
-          export_keys,
-          hover_results,
-          file_lines,
-          {}
-        )
-        cb(result, nil)
+    local uri = location.uri
+    with_target_buffer_from_uri(uri, function(bufnr, filepath, buf_err)
+      if buf_err then
+        cb("", buf_err)
         return
       end
 
-      -- Get hover for class members
-      local pending = #classes_to_expand
-      local all_member_hovers = {}
+      local file_lines = vim.fn.readfile(filepath)
+      local filetype = vim.bo[bufnr].filetype
 
-      for _, class_info in ipairs(classes_to_expand) do
-        get_class_members_hover(
-          bufnr,
-          class_info.positions,
-          function(member_hovers)
-            all_member_hovers[class_info.name] = member_hovers
-            pending = pending - 1
+      get_lsp_document_symbols(bufnr, function(symbols, sym_err)
+        if sym_err then
+          cb("", sym_err)
+          return
+        end
 
-            if pending == 0 then
-              local result = Lsp._format_exports(
-                require_path,
-                uri,
-                export_keys,
-                hover_results,
-                file_lines,
-                all_member_hovers
-              )
-              cb(result, nil)
+        local export_keys, export_meta = document_symbols_to_exports(symbols)
+        if #export_keys == 0 then
+          if filetype == "lua" then
+            export_keys = find_export_keys(bufnr)
+            export_meta = {}
+          end
+        end
+
+        if #export_keys == 0 then
+          cb("", "No exports found")
+          return
+        end
+
+        get_exports_hover_info(bufnr, export_keys, function(hover_results)
+          local classes_to_expand = {}
+          for _, export in ipairs(export_keys) do
+            local meta = export_meta[export.name] or {}
+            local hover = hover_results[export.name] or "unknown"
+            local is_class = is_lsp_class_kind(meta.kind)
+              or hover:match("__index") ~= nil
+              or hover:match(":%s*[%w_]+%s*{") ~= nil
+
+            if is_class then
+              local member_positions = meta.members
+                or find_class_member_positions(file_lines, export.name)
+              if member_positions and #member_positions > 0 then
+                table.insert(classes_to_expand, {
+                  name = export.name,
+                  positions = member_positions,
+                })
+              end
             end
           end
-        )
-      end
+
+          if #classes_to_expand == 0 then
+            local result = Lsp._format_exports(
+              filepath,
+              uri,
+              export_keys,
+              hover_results,
+              file_lines,
+              {},
+              export_meta,
+              filetype
+            )
+            cb(result, nil)
+            return
+          end
+
+          local pending = #classes_to_expand
+          local all_member_hovers = {}
+
+          for _, class_info in ipairs(classes_to_expand) do
+            get_class_members_hover(
+              bufnr,
+              class_info.positions,
+              function(member_hovers)
+                all_member_hovers[class_info.name] = member_hovers
+                pending = pending - 1
+
+                if pending == 0 then
+                  local result = Lsp._format_exports(
+                    filepath,
+                    uri,
+                    export_keys,
+                    hover_results,
+                    file_lines,
+                    all_member_hovers,
+                    export_meta,
+                    filetype
+                  )
+                  cb(result, nil)
+                end
+              end
+            )
+          end
+        end)
+      end)
     end)
+  end)
+    --]]
+end
+
+--- Stringifies exports for the symbol under a Treesitter node.
+---
+--- @param source_bufnr number The buffer number containing the reference
+--- @param node _99.treesitter.Node The treesitter node pointing at the import path or symbol
+--- @param cb fun(result: string, err: string|nil): nil Callback with formatted string or error
+function Lsp.stringify_definition_exports_from_node(source_bufnr, node, cb)
+  local position = Geo.Range:from_ts_node(node, source_bufnr).start
+  Lsp.stringify_definition_exports(source_bufnr, position, cb)
+end
+
+--- Collects export context from a target document URI.
+---
+--- @param target_uri string The target document URI
+--- @param cb fun(context: table|nil, err: string|nil): nil
+local function collect_exports_from_uri(target_uri, cb)
+  with_target_buffer_from_uri(target_uri, function(bufnr, filepath, buf_err)
+    if buf_err then
+      cb(nil, buf_err)
+      return
+    end
+
+    local file_lines = vim.fn.readfile(filepath)
+    local filetype = vim.bo[bufnr].filetype
+
+    get_lsp_document_symbols(bufnr, function(symbols, sym_err)
+      if sym_err then
+        cb(nil, sym_err)
+        return
+      end
+
+      local export_keys, export_meta = document_symbols_to_exports(symbols)
+      if #export_keys == 0 and filetype == "lua" then
+        export_keys = find_export_keys(bufnr)
+        export_meta = {}
+      end
+
+      if #export_keys == 0 then
+        cb(nil, "No exports found")
+        return
+      end
+
+      cb({
+        bufnr = bufnr,
+        filepath = filepath,
+        filetype = filetype,
+        file_lines = file_lines,
+        export_keys = export_keys,
+        export_meta = export_meta,
+        uri = target_uri,
+      }, nil)
+    end)
+  end)
+end
+
+--- Collects hover info for exports.
+---
+--- @param context table Export context
+--- @param cb fun(hover_results: table<string, string>, err: string|nil): nil
+local function collect_export_hovers(context, cb)
+  get_exports_hover_info(
+    context.bufnr,
+    context.export_keys,
+    function(hover_results)
+      cb(hover_results, nil)
+    end
+  )
+end
+
+--- Collects class member hovers for class exports.
+---
+--- @param context table Export context
+--- @param hover_results table<string, string> Export name -> hover info
+--- @param cb fun(class_member_hovers: table<string, table<string, string>>): nil
+local function collect_class_member_hovers(context, hover_results, cb)
+  local classes_to_expand = {}
+
+  for _, export in ipairs(context.export_keys) do
+    local meta = context.export_meta[export.name] or {}
+    local hover = hover_results[export.name] or "unknown"
+    local is_class = is_lsp_class_kind(meta.kind)
+      or hover:match("__index") ~= nil
+      or hover:match(":%s*[%w_]+%s*{") ~= nil
+
+    if is_class then
+      local member_positions = meta.members
+      if not member_positions and context.filetype == "lua" then
+        member_positions =
+          find_class_member_positions(context.file_lines, export.name)
+      end
+
+      if member_positions and #member_positions > 0 then
+        table.insert(classes_to_expand, {
+          name = export.name,
+          positions = member_positions,
+        })
+      end
+    end
+  end
+
+  if #classes_to_expand == 0 then
+    cb({})
+    return
+  end
+
+  local pending = #classes_to_expand
+  local all_member_hovers = {}
+
+  for _, class_info in ipairs(classes_to_expand) do
+    get_class_members_hover(
+      context.bufnr,
+      class_info.positions,
+      function(member_hovers)
+        all_member_hovers[class_info.name] = member_hovers
+        pending = pending - 1
+
+        if pending == 0 then
+          cb(all_member_hovers)
+        end
+      end
+    )
+  end
+end
+
+--- Builds export definition objects from context and hover data.
+---
+--- @param context table Export context
+--- @param hover_results table<string, string> Export name -> hover info
+--- @param class_member_hovers table<string, table<string, string>>
+--- @return table[] definitions
+local function build_export_definitions(
+  context,
+  hover_results,
+  class_member_hovers
+)
+  local definitions = {}
+
+  for _, export in ipairs(context.export_keys) do
+    local meta = context.export_meta[export.name] or {}
+    local def = {
+      name = export.name,
+      kind = meta.kind,
+      hover = hover_results[export.name] or "unknown",
+      members = {},
+    }
+
+    local member_hovers = class_member_hovers[export.name]
+    if member_hovers then
+      for member_name, member_hover in pairs(member_hovers) do
+        table.insert(def.members, {
+          name = member_name,
+          hover = member_hover,
+        })
+      end
+    end
+
+    table.insert(definitions, def)
+  end
+
+  return definitions
+end
+
+--- Stringifies a single export definition.
+---
+--- @param definition table Definition object
+--- @param context table Export context
+--- @return string[] lines
+local function stringify_export_definition(definition, context)
+  local lines = { "" }
+  local is_enum = is_lsp_enum_kind(definition.kind)
+    or definition.hover:match("enum%s+") ~= nil
+  local is_class = is_lsp_class_kind(definition.kind)
+    or definition.hover:match("__index") ~= nil
+    or definition.hover:match(":%s*[%w_]+%s*{") ~= nil
+
+  if is_enum then
+    local values = {}
+    if context.filetype == "lua" then
+      values = expand_enum_values(context.file_lines, definition.name)
+    end
+    if #values > 0 then
+      table.insert(lines, definition.name .. " = {")
+      for _, v in ipairs(values) do
+        table.insert(lines, "  " .. v)
+      end
+      table.insert(lines, "}")
+    else
+      table.insert(
+        lines,
+        definition.name .. ": " .. format_hover_output(definition.hover)
+      )
+    end
+    return lines
+  end
+
+  if is_class then
+    table.insert(lines, definition.name .. " {")
+    for _, member in ipairs(definition.members) do
+      if member.name ~= "__index" then
+        if member.hover:match("function%s") then
+          local sig = format_function_signature(member.hover)
+          table.insert(lines, "  " .. member.name .. sig)
+        else
+          local formatted = format_hover_output(member.hover)
+          table.insert(lines, "  " .. member.name .. ": " .. formatted)
+        end
+      end
+    end
+    table.insert(lines, "}")
+    return lines
+  end
+
+  if is_lsp_function_kind(definition.kind) then
+    local signature = format_function_signature(definition.hover)
+    table.insert(lines, definition.name .. signature)
+    return lines
+  end
+
+  table.insert(
+    lines,
+    definition.name .. ": " .. format_hover_output(definition.hover)
+  )
+  return lines
+end
+
+--- Gets LSP definitions for all exports in a target document URI.
+---
+--- @param target_uri string The target document URI
+--- @param cb fun(definitions: table[]|nil, context: table|nil, err: string|nil): nil
+local function get_lsp_export_definitions(target_uri, cb)
+  collect_exports_from_uri(target_uri, function(context, ctx_err)
+    if ctx_err then
+      cb(nil, nil, ctx_err)
+      return
+    end
+
+    collect_export_hovers(context, function(hover_results, _)
+      collect_class_member_hovers(
+        context,
+        hover_results,
+        function(member_hovers)
+          local definitions =
+            build_export_definitions(context, hover_results, member_hovers)
+          cb(definitions, context, nil)
+        end
+      )
+    end)
+  end)
+end
+
+--- Stringifies a list of export definitions.
+---
+--- @param definitions table[] List of export definitions
+--- @param context table Export context
+--- @return string
+local function stringify_export_definitions(definitions, context)
+  local out = {}
+  table.insert(out, "Module: " .. context.filepath)
+  table.insert(out, "URI: " .. context.uri)
+  table.insert(out, string.rep("-", 60))
+
+  for _, definition in ipairs(definitions) do
+    local lines = stringify_export_definition(definition, context)
+    for _, line in ipairs(lines) do
+      table.insert(out, line)
+    end
+  end
+
+  return table.concat(out, "\n")
+end
+
+--- Stringifies exports for a target document URI.
+---
+--- @param target_uri string The target document URI
+--- @param cb fun(result: string, err: string|nil): nil Callback with formatted string or error
+function Lsp.get_exports(target_uri, cb)
+  get_lsp_export_definitions(target_uri, function(definitions, context, err)
+    if err then
+      cb("", err)
+      return
+    end
+
+    local result = stringify_export_definitions(definitions, context)
+    cb(result, nil)
   end)
 end
 
@@ -535,7 +974,9 @@ function Lsp._format_exports(
   export_keys,
   hover_results,
   file_lines,
-  class_member_hovers
+  class_member_hovers,
+  export_meta,
+  filetype
 )
   local out = {}
 
@@ -548,12 +989,17 @@ function Lsp._format_exports(
 
     local hover = hover_results[export.name] or "unknown"
 
-    local is_enum = hover:match("enum%s+") ~= nil
-    local is_class = hover:match("__index") ~= nil
+    local meta = export_meta and export_meta[export.name] or {}
+    local is_enum = is_lsp_enum_kind(meta.kind) or hover:match("enum%s+") ~= nil
+    local is_class = is_lsp_class_kind(meta.kind)
+      or hover:match("__index") ~= nil
       or hover:match(":%s*[%w_]+%s*{") ~= nil
 
     if is_enum then
-      local values = expand_enum_values(file_lines, export.name)
+      local values = {}
+      if filetype == "lua" then
+        values = expand_enum_values(file_lines, export.name)
+      end
       if #values > 0 then
         table.insert(out, export.name .. " = {")
         for _, v in ipairs(values) do
@@ -567,45 +1013,37 @@ function Lsp._format_exports(
       local member_hovers = class_member_hovers[export.name] or {}
       table.insert(out, export.name .. " {")
 
-      -- Extract fields from class hover
-      local class_fields = {}
-      for line in hover:gmatch("[^\n]+") do
-        local field_name, field_type = line:match("^%s*([%w_]+):%s*([^,}]+)")
-        if field_name and field_type then
-          field_type = field_type:match("^%s*(.-)%s*,?$")
-          if field_type ~= "function" then
-            class_fields[field_name] = field_type
-          end
-        end
-      end
-
-      -- Print fields
-      for field_name, field_type in pairs(class_fields) do
-        if field_name ~= "__index" then
-          table.insert(out, "  " .. field_name .. ": " .. field_type)
-        end
-      end
-
-      -- Print methods with full signatures
+      -- Print members with either type or signature
       for method_name, method_hover in pairs(member_hovers) do
         if method_name ~= "__index" then
-          local sig = format_function_signature(method_hover)
-          table.insert(out, "  " .. method_name .. sig)
+          if method_hover:match("function%s") then
+            local sig = format_function_signature(method_hover)
+            table.insert(out, "  " .. method_name .. sig)
+          else
+            local formatted = format_hover_output(method_hover)
+            table.insert(out, "  " .. method_name .. ": " .. formatted)
+          end
         end
       end
 
       table.insert(out, "}")
     else
-      local formatted = format_hover_output(hover)
-      table.insert(out, export.name .. ": " .. formatted)
+      if is_lsp_function_kind(meta.kind) then
+        local signature = format_function_signature(hover)
+        table.insert(out, export.name .. signature)
+      else
+        local formatted = format_hover_output(hover)
+        table.insert(out, export.name .. ": " .. formatted)
+      end
     end
   end
 
   return table.concat(out, "\n")
 end
 
-Lsp.stringify_module_exports("99.editor.lsp", function(res)
-  print(res)
+local imports = ts.imports(0)
+Lsp.stringify_definition_exports_from_node(0, imports[1], function(s)
+  print("s", s.results)
 end)
 
 return {

@@ -8,8 +8,8 @@ set rtp+=~/.local/share/nvim/site/pack/packer/start/plenary.nvim
 set rtp+=~/.local/share/nvim/site/pack/packer/start/nvim-treesitter
 set rtp+=~/.local/share/lunarvim/site/pack/packer/start/plenary.nvim
 set rtp+=~/.local/share/lunarvim/site/pack/packer/start/nvim-treesitter
-set rtp+=~/.local/share/nvim/lazy/plenary.nvim
-set rtp+=~/.local/share/nvim/lazy/nvim-treesitter
+set rtp^=~/.local/share/nvim/lazy/nvim-treesitter
+set rtp^=~/.local/share/nvim/lazy/plenary.nvim
 
 set autoindent
 set tabstop=4
@@ -21,7 +21,9 @@ runtime! plugin/plenary.vim
 runtime! plugin/nvim-treesitter.lua
 
 lua <<EOF
-vim.opt.rtp:append(vim.fn.stdpath('data') .. '/site')
+-- Always setup nvim-treesitter
+local ts = require('nvim-treesitter')
+ts.setup()
 
 -- parsers to attempt to install (for user convenience)
 local all_parsers = {
@@ -35,10 +37,15 @@ local required_parsers = { 'lua', 'typescript' }
 local function missing_parsers(parsers)
   local missing = {}
   local buf = vim.api.nvim_create_buf(false, true)
+  print('[minimal.vim] Checking for missing parsers...')
   for _, lang in ipairs(parsers) do
-    local ok = pcall(vim.treesitter.get_parser, buf, lang)
+    print('[minimal.vim] Checking parser for: ' .. lang)
+    local ok, err = pcall(vim.treesitter.get_parser, buf, lang)
     if not ok then
+      print('[minimal.vim] Parser NOT found for ' .. lang .. ': ' .. tostring(err))
       table.insert(missing, lang)
+    else
+      print('[minimal.vim] Parser FOUND for ' .. lang)
     end
   end
   vim.api.nvim_buf_delete(buf, { force = true })
@@ -46,8 +53,7 @@ local function missing_parsers(parsers)
 end
 
 local function install_with_main_branch_api(parsers)
-  local install_dir = vim.fn.stdpath('data') .. '/site'
-  require('nvim-treesitter').setup({ install_dir = install_dir })
+  -- setup is already done above, just install
   require('nvim-treesitter').install(parsers):wait(300000)
 end
 

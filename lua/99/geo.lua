@@ -1,3 +1,6 @@
+--- TODO: rewrite : functions to . functions where they dont referencegeo
+--- self.
+---
 local project_row = 100000000
 
 --- @param point_or_row _99.Point | number
@@ -45,13 +48,26 @@ end
 --- @param row number
 --- @param col number
 --- @return _99.Point
-function Point:new(row, col)
+function Point:from_1_based(row, col)
   assert(type(row) == "number", "expected row to be a number")
   assert(type(col) == "number", "expected col to be a number")
   return setmetatable({
     row = row,
     col = col,
   }, self)
+end
+
+--- 0 based point
+--- @param row number
+--- @param col number
+--- @return _99.Point
+function Point.from_0_based(row, col)
+  assert(type(row) == "number", "expected row to be a number")
+  assert(type(col) == "number", "expected col to be a number")
+  return setmetatable({
+    row = row + 1,
+    col = col + 1,
+  }, Point)
 end
 
 function Point:from_cursor()
@@ -89,6 +105,14 @@ function Point:from_ts_point(row, col)
     row = row + 1,
     col = col + 1,
   }, self)
+end
+
+--- @param lsp_point {character: number, line: number}
+function Point.from_lsp_point(lsp_point)
+  return setmetatable({
+    row = lsp_point.line + 1,
+    col = lsp_point.character + 1,
+  }, Point)
 end
 
 --- stores all 2 points
@@ -158,13 +182,13 @@ end
 --- @param point _99.Point
 --- @return _99.Point
 function Point:add(point)
-  return Point:new(self.row + point.row, self.col + point.col)
+  return Point:from_1_based(self.row + point.row, self.col + point.col)
 end
 
 --- @param point _99.Point
 --- @return _99.Point
 function Point:sub(point)
-  return Point:new(self.row - point.row, self.col - point.col)
+  return Point:from_1_based(self.row - point.row, self.col - point.col)
 end
 
 --- @param mark _99.Mark
@@ -202,21 +226,52 @@ function Range.from_visual_selection()
   local buffer = vim.api.nvim_get_current_buf()
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
-  local start = Point:new(start_pos[2], start_pos[3])
-  local end_ = Point:new(end_pos[2], end_pos[3])
+  local start = Point:from_1_based(start_pos[2], start_pos[3])
+  local end_ = Point:from_1_based(end_pos[2], end_pos[3])
 
   --- visual line mode will select the end point for each row to be int max
   --- which will cause marks to fail. so we have to correct it to the literal
   --- row length
-  local end_r, _ = end_:to_vim()
+  local end_row, _ = end_:to_vim()
   local end_line =
-    vim.api.nvim_buf_get_lines(buffer, end_r, end_r + 1, false)[1]
-  local actual_end = Point:new(end_pos[2], math.min(end_pos[3], #end_line + 1))
+    vim.api.nvim_buf_get_lines(buffer, end_row, end_row + 1, false)
 
+  --- @type number
+  local end_col
+
+  --- another bug where mark >' is beyond the editor.
+  --- therefore will just grab from start to end and use the last captured row
+  --- as the means to discover the proper end col and end row
+  if #end_line == 0 then
+    local start_r, _ = start:to_vim()
+    local selected_lines =
+      vim.api.nvim_buf_get_lines(buffer, start_r, end_row, false)
+    end_row = start_r + #selected_lines
+    --- another edge case, the buffer may be empty...
+    --- sentry literally caught this one
+    if #selected_lines == 0 then
+      --- an edge to the edge case. we are in 1 based indexing... f
+      end_col = 1
+    else
+      end_col = #selected_lines[#selected_lines]
+    end
+    --- here is confusing part, we are now in 1 based values
+    --- in the geo_spec test, this would result in end_row = 2, end_col = 8
+    --- so, there is this -1 because we are going to go from 1 based to 0 based
+    end_row = end_row - 1
+
+    --- we need to capture the whole line, therefore its end of line + 1
+    end_col = end_col
+  else
+    --- we are using zero based point, which means length of line includes the new_line character
+    end_col = #end_line[1]
+  end
+
+  local actual_end = Point.from_0_based(end_row, end_col)
   return Range:new(buffer, start, actual_end)
 end
 
----@param node _99.treesitter.TSNode
+---@param node _99.treesitter.Node
 ---@param buffer number
 ---@return _99.Range
 function Range:from_ts_node(node, buffer)

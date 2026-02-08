@@ -73,7 +73,14 @@ end
 function Mark.mark_above_func(buffer, func)
   local start = func.function_range.start
   local line, col = start:to_vim()
-  local id = vim.api.nvim_buf_set_extmark(buffer, nsid, line - 1, col, {})
+
+  line = line - 1
+  if line < 0 then
+    col = 0
+    line = 0
+  end
+
+  local id = vim.api.nvim_buf_set_extmark(buffer, nsid, line, col, {})
 
   return setmetatable({
     id = id,

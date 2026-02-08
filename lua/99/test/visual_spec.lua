@@ -24,8 +24,8 @@ local function setup(content, start_row, start_col, end_row, end_col)
   local buffer = test_utils.create_file(content, "lua", start_row, start_col)
 
   -- Create a range for the visual selection
-  local start_point = Point:new(start_row, start_col)
-  local end_point = Point:new(end_row, end_col)
+  local start_point = Point:from_1_based(start_row, start_col)
+  local end_point = Point:from_1_based(end_row, end_col)
   local range = Range:new(buffer, start_point, end_point)
 
   return p, buffer, range
